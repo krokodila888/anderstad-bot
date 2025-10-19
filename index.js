@@ -9,7 +9,14 @@ if (!TOKEN || TOKEN === 'YOUR_TOKEN') {
     process.exit(1);
 }
 
-const bot = new TelegramBot(TOKEN, { polling: true });
+const bot = new TelegramBot(TOKEN, { 
+    polling: {
+        interval: 30000,
+        timeout: 10,
+        autoStart: true
+    }
+});
+
 const db = new sqlite3.Database('reminders.db');
 
 // Инициализация базы данных
