@@ -108,25 +108,20 @@ function parseTime(timeString) {
     throw new Error('Неверный формат времени. Используйте: "2024-12-31 20:00" или "in 5 minutes"');
 }
 
-// Команда для показа текущего времени
-bot.onText(/\/time/, (msg) => {
-    const chatId = msg.chat.id;
-    const now = new Date();
-    const moscowTime = new Date(now.getTime() + (3 * 60 * 60 * 1000)); // UTC+3
-    
-    const timeInfo = `
-🕒 Текущее время:
-📍 Москва: ${moscowTime.toISOString().slice(0, 16).replace('T', ' ')}
-🌐 UTC: ${now.toISOString().slice(0, 16).replace('T', ' ')}
-⏰ Сервер: ${now.toLocaleString('ru-RU')}
-    `;
-    
-    bot.sendMessage(chatId, timeInfo);
-});
+// Флаг для отслеживания обработки сообщений
+const processingMessages = new Set();
 
-// Стартовая команда
+// Стартовая команда - используем once чтобы избежать дублирования
 bot.onText(/\/start/, (msg) => {
     const chatId = msg.chat.id;
+    const messageId = msg.message_id;
+    
+    // Проверяем, не обрабатывается ли уже это сообщение
+    if (processingMessages.has(messageId)) {
+        return;
+    }
+    processingMessages.add(messageId);
+    
     const helpText = `
 🤖 Бот-напоминалка (работает на Render)
 
@@ -143,12 +138,56 @@ bot.onText(/\/start/, (msg) => {
 
 💡 Время указывается в Московском часовом поясе (UTC+3)
     `;
-    bot.sendMessage(chatId, helpText);
+    
+    bot.sendMessage(chatId, helpText)
+        .finally(() => {
+            // Удаляем сообщение из обработки через секунду
+            setTimeout(() => {
+                processingMessages.delete(messageId);
+            }, 1000);
+        });
 });
 
-// Обработчик команды /remind
-bot.onText(/\/remind (.+) at (.+)/, (msg, match) => {
+// Команда для показа текущего времени
+bot.onText(/\/time/, (msg) => {
     const chatId = msg.chat.id;
+    const messageId = msg.message_id;
+    
+    if (processingMessages.has(messageId)) return;
+    processingMessages.add(messageId);
+    
+    const now = new Date();
+    const moscowTime = new Date(now.getTime() + (3 * 60 * 60 * 1000)); // UTC+3
+    
+    const timeInfo = `
+🕒 Текущее время:
+📍 Москва: ${moscowTime.toISOString().slice(0, 16).replace('T', ' ')}
+🌐 UTC: ${now.toISOString().slice(0, 16).replace('T', ' ')}
+⏰ Сервер: ${now.toLocaleString('ru-RU')}
+    `;
+    
+    bot.sendMessage(chatId, timeInfo)
+        .finally(() => {
+            setTimeout(() => {
+                processingMessages.delete(messageId);
+            }, 1000);
+        });
+});
+
+// Обработчик команды /remind - ОДИН обработчик
+let isProcessingRemind = false;
+
+bot.onText(/\/remind (.+) at (.+)/, async (msg, match) => {
+    const chatId = msg.chat.id;
+    const messageId = msg.message_id;
+    
+    // Защита от дублирования - проверяем, не обрабатывается ли уже это сообщение
+    if (processingMessages.has(messageId)) {
+        console.log('⚠️ Сообщение уже обрабатывается, пропускаем...');
+        return;
+    }
+    processingMessages.add(messageId);
+    
     const reminderText = match[1];
     const reminderTime = match[2];
     
@@ -165,28 +204,44 @@ bot.onText(/\/remind (.+) at (.+)/, (msg, match) => {
         console.log(`⏰ Разница: ${(new Date(parsedTime.utcTime + 'Z') - new Date()) / 1000} секунд`);
         
         // Сохраняем в базу
-        db.run(
-            'INSERT INTO reminders (chat_id, reminder_text, reminder_time) VALUES (?, ?, ?)',
-            [chatId, reminderText, parsedTime.utcTime],
-            function(err) {
-                if (err) {
-                    console.error('Ошибка базы данных:', err);
-                    bot.sendMessage(chatId, '❌ Ошибка сохранения напоминания');
-                } else {
-                    console.log(`Напоминание сохранено с ID: ${this.lastID}`);
-                    bot.sendMessage(chatId, `✅ Напоминание создано:\n"${reminderText}"\n⏰ на ${parsedTime.localTime} (МСК)`);
+        await new Promise((resolve, reject) => {
+            db.run(
+                'INSERT INTO reminders (chat_id, reminder_text, reminder_time) VALUES (?, ?, ?)',
+                [chatId, reminderText, parsedTime.utcTime],
+                function(err) {
+                    if (err) {
+                        console.error('Ошибка базы данных:', err);
+                        reject(err);
+                    } else {
+                        console.log(`Напоминание сохранено с ID: ${this.lastID}`);
+                        resolve(this.lastID);
+                    }
                 }
-            }
-        );
+            );
+        });
+        
+        // Отправляем ОДНО сообщение об успехе
+        await bot.sendMessage(chatId, `✅ Напоминание создано:\n"${reminderText}"\n⏰ на ${parsedTime.localTime} (МСК)`);
+        
     } catch (error) {
         console.error('Ошибка создания напоминания:', error.message);
-        bot.sendMessage(chatId, `❌ ${error.message}`);
+        // Отправляем ОДНО сообщение об ошибке
+        await bot.sendMessage(chatId, `❌ ${error.message}`);
+    } finally {
+        // Очищаем флаг обработки
+        setTimeout(() => {
+            processingMessages.delete(messageId);
+        }, 1000);
     }
 });
 
 // Команда для отладки
 bot.onText(/\/debug/, (msg) => {
     const chatId = msg.chat.id;
+    const messageId = msg.message_id;
+    
+    if (processingMessages.has(messageId)) return;
+    processingMessages.add(messageId);
     
     const nowUTC = new Date().toISOString().slice(0, 19).replace('T', ' ');
     const nowMoscow = new Date(new Date().getTime() + (3 * 60 * 60 * 1000));
@@ -196,7 +251,12 @@ bot.onText(/\/debug/, (msg) => {
         [chatId],
         (err, rows) => {
             if (err) {
-                bot.sendMessage(chatId, '❌ Ошибка базы данных');
+                bot.sendMessage(chatId, '❌ Ошибка базы данных')
+                    .finally(() => {
+                        setTimeout(() => {
+                            processingMessages.delete(messageId);
+                        }, 1000);
+                    });
                 return;
             }
             
@@ -222,7 +282,12 @@ bot.onText(/\/debug/, (msg) => {
                 });
             }
             
-            bot.sendMessage(chatId, message);
+            bot.sendMessage(chatId, message)
+                .finally(() => {
+                    setTimeout(() => {
+                        processingMessages.delete(messageId);
+                    }, 1000);
+                });
         }
     );
 });
@@ -230,16 +295,30 @@ bot.onText(/\/debug/, (msg) => {
 // Команда для очистки напоминаний
 bot.onText(/\/clear/, (msg) => {
     const chatId = msg.chat.id;
+    const messageId = msg.message_id;
+    
+    if (processingMessages.has(messageId)) return;
+    processingMessages.add(messageId);
     
     db.run(
         'DELETE FROM reminders WHERE chat_id = ?',
         [chatId],
         function(err) {
             if (err) {
-                bot.sendMessage(chatId, '❌ Ошибка при очистке напоминаний');
+                bot.sendMessage(chatId, '❌ Ошибка при очистке напоминаний')
+                    .finally(() => {
+                        setTimeout(() => {
+                            processingMessages.delete(messageId);
+                        }, 1000);
+                    });
             } else {
                 const deletedCount = this.changes;
-                bot.sendMessage(chatId, `✅ Удалено напоминаний: ${deletedCount}`);
+                bot.sendMessage(chatId, `✅ Удалено напоминаний: ${deletedCount}`)
+                    .finally(() => {
+                        setTimeout(() => {
+                            processingMessages.delete(messageId);
+                        }, 1000);
+                    });
                 console.log(`🗑️ Удалено ${deletedCount} напоминаний для chat_id: ${chatId}`);
             }
         }
