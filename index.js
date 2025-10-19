@@ -4,7 +4,7 @@ const sqlite3 = require('sqlite3').verbose();
 
 // Проверяем токен
 const TOKEN = process.env.TELEGRAM_BOT_TOKEN;
-if (!TOKEN || TOKEN === 'YOUR_TOKEN') {
+if (!TOKEN) {
     console.error('❌ Ошибка: Токен не настроен!');
     process.exit(1);
 }
@@ -39,76 +39,36 @@ db.serialize(() => {
     });
 });
 
-// Правильная функция для преобразования локального времени в UTC
-function localTimeToUTC(localTimeString) {
-    const [datePart, timePart] = localTimeString.split(' ');
-    const [year, month, day] = datePart.split('-').map(Number);
-    const [hours, minutes] = timePart.split(':').map(Number);
-    
-    // Создаем дату в локальном времени (система сама определит часовой пояс)
-    const localDate = new Date(year, month - 1, day, hours, minutes);
-    
-    // Получаем смещение часового пояса в минутах
-    const timezoneOffset = localDate.getTimezoneOffset();
-    
-    // Конвертируем в UTC: добавляем смещение (т.к. getTimezoneOffset() возвращает разницу в минутах от UTC)
-    const utcDate = new Date(localDate.getTime() + (timezoneOffset * 60 * 1000));
-    
-    const utcTime = utcDate.toISOString().slice(0, 19).replace('T', ' ');
-    
-    console.log(`🕒 Конвертация времени:`);
-    console.log(`   Локальное: ${localTimeString}`);
-    console.log(`   UTC: ${utcTime}`);
-    console.log(`   Смещение: ${timezoneOffset} минут`);
-    
-    return utcTime;
-}
-
-// Функция для преобразования UTC в локальное время для отображения
-function utcToLocalTime(utcTimeString) {
-    const utcDate = new Date(utcTimeString + 'Z');
-    const localDate = new Date(utcDate.getTime() - (utcDate.getTimezoneOffset() * 60 * 1000));
-    
-    const year = localDate.getFullYear();
-    const month = String(localDate.getMonth() + 1).padStart(2, '0');
-    const day = String(localDate.getDate()).padStart(2, '0');
-    const hours = String(localDate.getHours()).padStart(2, '0');
-    const minutes = String(localDate.getMinutes()).padStart(2, '0');
-    
-    return `${year}-${month}-${day} ${hours}:${minutes}`;
-}
-
-// Проверка, не является ли время уже прошедшим
-function isPastTime(timeString) {
-    const [datePart, timePart] = timeString.split(' ');
-    const [year, month, day] = datePart.split('-').map(Number);
-    const [hours, minutes] = timePart.split(':').map(Number);
-    
-    const inputDate = new Date(year, month - 1, day, hours, minutes);
-    const now = new Date();
-    
-    return inputDate <= now;
-}
-
-// Исправленная функция парсинга времени
+// Упрощенная функция парсинга - ВСЕГДА используем UTC
 function parseTime(timeString) {
     console.log(`🕒 Парсим время: "${timeString}"`);
     
-    // Формат "2024-12-31 23:59" - считаем что это ЛОКАЛЬНОЕ время
+    // Формат "2024-12-31 23:59" - считаем что это UTC+3 (Московское время)
     if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/.test(timeString)) {
-        // Проверяем, не прошло ли уже это время
-        if (isPastTime(timeString)) {
+        const [datePart, timePart] = timeString.split(' ');
+        const [year, month, day] = datePart.split('-').map(Number);
+        const [hours, minutes] = timePart.split(':').map(Number);
+        
+        // Создаем дату в Московском времени (UTC+3) и конвертируем в UTC
+        const moscowTime = new Date(Date.UTC(year, month - 1, day, hours, minutes));
+        moscowTime.setHours(moscowTime.getHours() - 3); // Вычитаем 3 часа для UTC
+        
+        const utcTime = moscowTime.toISOString().slice(0, 19).replace('T', ' ');
+        
+        console.log(`📅 Конвертация: ${timeString} (МСК) -> ${utcTime} (UTC)`);
+        
+        // Проверяем, не прошло ли время
+        if (moscowTime <= new Date()) {
             throw new Error('Указанное время уже прошло');
         }
         
-        const utcTime = localTimeToUTC(timeString);
         return {
             localTime: timeString,
             utcTime: utcTime
         };
     }
     
-    // Формат "in X minutes" - добавляем к текущему времени
+    // Формат "in X minutes" - добавляем к текущему UTC времени
     if (timeString.startsWith('in ')) {
         const parts = timeString.split(' ');
         const amount = parseInt(parts[1]);
@@ -133,28 +93,46 @@ function parseTime(timeString) {
             throw new Error('Указанное время уже прошло');
         }
         
-        const localTime = resultTime.toISOString().slice(0, 16).replace('T', ' ');
         const utcTime = resultTime.toISOString().slice(0, 19).replace('T', ' ');
+        const moscowTime = new Date(resultTime.getTime() + (3 * 60 * 60 * 1000)); // +3 часа для МСК
         
-        console.log(`✅ Преобразовано в: локальное ${localTime}, UTC: ${utcTime}`);
+        const localTimeStr = moscowTime.toISOString().slice(0, 16).replace('T', ' ');
+        
+        console.log(`✅ Преобразовано в: ${localTimeStr} (МСК), ${utcTime} (UTC)`);
         return {
-            localTime: localTime,
+            localTime: localTimeStr,
             utcTime: utcTime
         };
     }
     
-    throw new Error('Неверный формат времени');
+    throw new Error('Неверный формат времени. Используйте: "2024-12-31 20:00" или "in 5 minutes"');
 }
+
+// Команда для показа текущего времени
+bot.onText(/\/time/, (msg) => {
+    const chatId = msg.chat.id;
+    const now = new Date();
+    const moscowTime = new Date(now.getTime() + (3 * 60 * 60 * 1000)); // UTC+3
+    
+    const timeInfo = `
+🕒 Текущее время:
+📍 Москва: ${moscowTime.toISOString().slice(0, 16).replace('T', ' ')}
+🌐 UTC: ${now.toISOString().slice(0, 16).replace('T', ' ')}
+⏰ Сервер: ${now.toLocaleString('ru-RU')}
+    `;
+    
+    bot.sendMessage(chatId, timeInfo);
+});
 
 // Стартовая команда
 bot.onText(/\/start/, (msg) => {
     const chatId = msg.chat.id;
     const helpText = `
-🤖 Бот-напоминалка
+🤖 Бот-напоминалка (работает на Render)
 
 Команды:
 /remind [текст] at [время] - создать напоминание
-/debug - показать активные напоминания
+/debug - показать активные напоминания  
 /clear - удалить все мои напоминания
 /time - показать текущее время
 
@@ -163,26 +141,9 @@ bot.onText(/\/start/, (msg) => {
 /remind Встреча с коллегой at in 2 hours
 /remind Принять таблетки at in 2 minutes
 
-💡 Время указывается в формате ГГГГ-ММ-ДД ЧЧ:MM
+💡 Время указывается в Московском часовом поясе (UTC+3)
     `;
     bot.sendMessage(chatId, helpText);
-});
-
-// Команда для показа текущего времени
-bot.onText(/\/time/, (msg) => {
-    const chatId = msg.chat.id;
-    const now = new Date();
-    const localTime = now.toLocaleString('ru-RU');
-    const utcTime = now.toISOString().slice(0, 19).replace('T', ' ');
-    
-    const timeInfo = `
-🕒 Текущее время:
-📍 Локальное: ${localTime}
-🌐 UTC: ${utcTime}
-⏰ Часовой пояс: UTC${now.getTimezoneOffset() > 0 ? '-' : '+'}${Math.abs(now.getTimezoneOffset() / 60)}
-    `;
-    
-    bot.sendMessage(chatId, timeInfo);
 });
 
 // Обработчик команды /remind
@@ -213,7 +174,7 @@ bot.onText(/\/remind (.+) at (.+)/, (msg, match) => {
                     bot.sendMessage(chatId, '❌ Ошибка сохранения напоминания');
                 } else {
                     console.log(`Напоминание сохранено с ID: ${this.lastID}`);
-                    bot.sendMessage(chatId, `✅ Напоминание создано:\n"${reminderText}"\n⏰ на ${parsedTime.localTime}`);
+                    bot.sendMessage(chatId, `✅ Напоминание создано:\n"${reminderText}"\n⏰ на ${parsedTime.localTime} (МСК)`);
                 }
             }
         );
@@ -228,6 +189,7 @@ bot.onText(/\/debug/, (msg) => {
     const chatId = msg.chat.id;
     
     const nowUTC = new Date().toISOString().slice(0, 19).replace('T', ' ');
+    const nowMoscow = new Date(new Date().getTime() + (3 * 60 * 60 * 1000));
     
     db.all(
         'SELECT * FROM reminders WHERE chat_id = ? ORDER BY reminder_time',
@@ -238,22 +200,23 @@ bot.onText(/\/debug/, (msg) => {
                 return;
             }
             
-            let message = `🕒 Текущее время: ${new Date().toLocaleString('ru-RU')}\n`;
-            message += `🌐 Текущее UTC: ${nowUTC}\n\n`;
+            let message = `🕒 Текущее время:\n`;
+            message += `📍 Москва: ${nowMoscow.toISOString().slice(0, 16).replace('T', ' ')}\n`;
+            message += `🌐 UTC: ${nowUTC.slice(0, 16)}\n\n`;
             
             if (rows.length === 0) {
                 message += '📭 Напоминаний нет';
             } else {
-                message += `📋 Все напоминания (${rows.length}):\n\n`;
+                message += `📋 Активные напоминания (${rows.length}):\n\n`;
                 rows.forEach(row => {
                     const status = row.sent ? '✅ Отправлено' : '⏳ Ожидает';
-                    const localTime = utcToLocalTime(row.reminder_time);
+                    const moscowTime = new Date(new Date(row.reminder_time + 'Z').getTime() + (3 * 60 * 60 * 1000));
+                    const localTimeStr = moscowTime.toISOString().slice(0, 16).replace('T', ' ');
                     const timeDiff = (new Date(row.reminder_time + 'Z') - new Date()) / 1000;
                     const timeLeft = timeDiff > 0 ? `через ${Math.round(timeDiff / 60)} мин` : 'ДОЛЖНО СРАБОТАТЬ';
                     
                     message += `📍 "${row.reminder_text}"\n`;
-                    message += `⏰ ${localTime} (локальное)\n`;
-                    message += `🌐 ${row.reminder_time} (UTC)\n`;
+                    message += `⏰ ${localTimeStr} (МСК)\n`;
                     message += `🕒 ${timeLeft} | ${status}\n`;
                     message += `🆔 ID: ${row.id}\n\n`;
                 });
@@ -286,10 +249,11 @@ bot.onText(/\/clear/, (msg) => {
 // Проверка напоминаний каждую минуту
 setInterval(() => {
     const now = new Date().toISOString().slice(0, 19).replace('T', ' ');
+    const nowMoscow = new Date(new Date().getTime() + (3 * 60 * 60 * 1000));
     
     console.log(`\n🔍 Проверка напоминаний...`);
-    console.log(`🕒 Локальное время: ${new Date().toLocaleString('ru-RU')}`);
-    console.log(`🌐 Текущее UTC: ${now}`);
+    console.log(`📍 Москва: ${nowMoscow.toISOString().slice(0, 16).replace('T', ' ')}`);
+    console.log(`🌐 UTC: ${now}`);
     
     // Находим напоминания для отправки
     db.all(
@@ -305,10 +269,10 @@ setInterval(() => {
                 console.log(`📨 Найдено ${rows.length} напоминаний для отправки:`);
                 
                 rows.forEach(row => {
-                    const localTime = utcToLocalTime(row.reminder_time);
+                    const moscowTime = new Date(new Date(row.reminder_time + 'Z').getTime() + (3 * 60 * 60 * 1000));
                     console.log(`- "${row.reminder_text}" (id: ${row.id})`);
-                    console.log(`  Локальное время: ${localTime}`);
-                    console.log(`  UTC время: ${row.reminder_time}`);
+                    console.log(`  Москва: ${moscowTime.toISOString().slice(0, 16).replace('T', ' ')}`);
+                    console.log(`  UTC: ${row.reminder_time}`);
                 });
                 
                 // Отправляем напоминания
@@ -334,17 +298,5 @@ bot.on('polling_error', (error) => {
     console.error('❌ Ошибка polling:', error.code, error.message);
 });
 
-bot.on('error', (error) => {
-    console.error('❌ Общая ошибка бота:', error);
-});
-
-// Корректное завершение работы
-process.on('SIGINT', () => {
-    console.log('\n🛑 Остановка бота...');
-    db.close();
-    process.exit();
-});
-
-console.log('🚀 Бот запущен локально!');
+console.log('🚀 Бот запущен на Render!');
 console.log('📱 Перейдите в Telegram и отправьте /start вашему боту');
-console.log('⏹️  Для остановки нажмите Ctrl+C');
